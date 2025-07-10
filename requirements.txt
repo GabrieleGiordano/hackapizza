@@ -1,0 +1,14 @@
+pandas>=1.3.0
+numpy>=1.20.0
+flask>=2.0.0
+requests>=2.25.0
+# Queste dipendenze servono per:
+# - validate_submission.py (validatore per partecipanti)
+# - evaluate_submissions.py (valutatore per organizzatore)
+# - realtime_evaluation_server.py (server per valutazione in tempo reale)
+# - submit_to_server.py (script per sottomettere al server)
+# - auto_tunnel_manager.py (gestione automatica tunnel ngrok)
+# - auto_submit_client.py (client intelligente per partecipanti)
+
+# Note: subprocess, logging, time, signal, typing, json, pathlib, datetime, argparse 
+# sono moduli built-in di Python e non richiedono installazione 
