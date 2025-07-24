@@ -19,7 +19,6 @@ load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     raise ValueError("⚠️ La variabile OPENAI_API_KEY non è stata trovata nel file .env")
-
 os.environ["OPENAI_API_KEY"] = api_key
 
 # 2. Carica tutti i menu (PDF)
@@ -32,25 +31,12 @@ for root, dirs, files in os.walk(menu_dir):
             loader = PyPDFLoader(path)
             documents.extend(loader.load())
 
-# Dopo aver caricato i documenti PDF, stampa il testo della prima pagina del primo PDF per debug
-print("\n[DEBUG] Testo estratto dalla prima pagina del primo PDF:")
-if documents:
-    print(documents[0].page_content)
-
-# Rimuovo la funzione extract_dishes e la logica associata
-# Torno al chunking classico su tutto il testo estratto dai PDF
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-
+# 3. Chunking
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=400,
-    chunk_overlap=50
+    chunk_size=800,
+    chunk_overlap=150
 )
 docs = text_splitter.split_documents(documents)
-
-# DEBUG: stampa i primi 5 chunk generati
-print("\n[DEBUG] Esempio dei primi 5 chunk estratti dai menu PDF:")
-for i, doc in enumerate(docs[:5]):
-    print(f"--- Chunk {i+1} ---\n{doc.page_content}\n")
 
 # 4. Crea embeddings
 embedding = OpenAIEmbeddings()
@@ -59,19 +45,19 @@ embedding = OpenAIEmbeddings()
 db = FAISS.from_documents(docs, embedding)
 
 # 6. Crea retriever con k=5
-retriever = db.as_retriever(search_kwargs={"k": 20})
+retriever = db.as_retriever(search_kwargs={"k": 5})
 
-# Carica dish_mapping.json se esiste
+# 7. Carica dish_mapping.json se esiste
 mapping_path = "Hackapizza Dataset/Misc/dish_mapping.json"
-dish_mapping = None
 if os.path.exists(mapping_path):
     with open(mapping_path, "r", encoding="utf-8") as f:
         dish_mapping = json.load(f)
-        dish_names = list(dish_mapping.keys())
+    dish_names = list(dish_mapping.keys())
 else:
+    dish_mapping = {}
     dish_names = []
 
-# Prompt con lista completa dei piatti
+# 8. Prepara il prompt
 def make_prompt_template(dish_names):
     piatti_string = "\n".join(dish_names) if dish_names else ""
     return f"""
@@ -89,17 +75,14 @@ Contesto:
 Domanda: {{question}}
 Risposta:
 """
-
 prompt_template = make_prompt_template(dish_names)
 PROMPT = PromptTemplate(
     input_variables=["context", "question"],
     template=prompt_template
 )
 
-# 7. Crea LLM con modello GPT-3.5-turbo
+# 9. Crea LLM e QA chain
 llm = ChatOpenAI(model="gpt-3.5-turbo")
-
-# 8. Catena RetrievalQA con prompt personalizzato
 qa_chain = RetrievalQA.from_chain_type(
     llm=llm,
     chain_type="stuff",
@@ -108,45 +91,54 @@ qa_chain = RetrievalQA.from_chain_type(
     chain_type_kwargs={"prompt": PROMPT}
 )
 
-# 9. Carica domande dal CSV
+# 10. Carica domande dal CSV
 df_domande = pd.read_csv("Hackapizza Dataset/domande.csv")
-
-# 10. Itera sulle domande e rispondi mostrando risposta, documenti usati e match piatti
-# Determina la colonna domanda
 if 'domanda' in df_domande.columns:
     domanda_col = 'domanda'
 elif 'question' in df_domande.columns:
     domanda_col = 'question'
 else:
-    domanda_col = df_domande.columns[1]  # fallback: seconda colonna
+    domanda_col = df_domande.columns[1]
 
+# 11. Loop sulle domande e stampa risposta, fonti, match e chunk
 for n, (idx, row) in enumerate(df_domande.iterrows(), 1):
     query = str(row[domanda_col])
     print(f"\n➡️ Domanda {n}: {query}")
     result = qa_chain.invoke({"query": query})
+
+    # Risposta generata
     print("✅ Risposta:", result['result'])
-    print("📄 Documenti usati come fonte:")
+
+    # File usati come fonte
     fonti = set()
     for doc in result['source_documents']:
         source = doc.metadata.get("source", "sconosciuto")
         filename = os.path.basename(source)
         fonti.add(filename)
-    print(", ".join(sorted(fonti)))
-    if dish_names and dish_mapping:
+    print("📄 Documenti usati:", ", ".join(sorted(fonti)))
+
+    # Contenuto dei chunk
+    print("📦 Chunk recuperati:")
+    for i, doc in enumerate(result['source_documents'], 1):
+        source = doc.metadata.get("source", "sconosciuto")
+        filename = os.path.basename(source)
+        print(f"--- Chunk {i} da '{filename}' ---")
+        print(doc.page_content.strip())
+        print("―" * 40)
+
+    # Matching piatti
+    if dish_names:
         risposta = result['result']
-        candidate_dishes = [x.strip() for x in risposta.split(",") if x.strip() and x.strip().lower() != "nessuno"]
-        matched = []
-        for cand in candidate_dishes:
-            if cand in dish_mapping:
-                matched.append((cand, cand, dish_mapping[cand]))
-            else:
-                matched.append((cand, None, None))
+        candidate_dishes = [x.strip() for x in risposta.split(",") if x.strip().lower() != "nessuno"]
         if candidate_dishes:
             print("🔎 Matching piatti trovati:")
-            for orig, best, id_ in matched:
-                if best:
-                    print(f"  '{orig}' → '{best}' (ID: {id_})")
+            for cand in candidate_dishes:
+                if cand in dish_mapping:
+                    print(f"  '{cand}' → ID: {dish_mapping[cand]}")
                 else:
-                    print(f"  '{orig}' → nessun match trovato")
+                    print(f"  '{cand}' → nessun match trovato")
+        else:
+            print("🔎 Matching piatti trovati: Nessuno")
+
     if n == 4:
         break
