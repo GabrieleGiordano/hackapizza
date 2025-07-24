@@ -1,3 +1,5 @@
 .idea/
 .env
 requirements.txt
+venv311/
+venv/
